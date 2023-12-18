@@ -1,0 +1,285 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Manim Player</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Roboto&display=swap" rel="stylesheet"> 
+</head>
+<body>
+    <div id="settings-container">
+        <div id="settings-inner">
+        <span>
+            <label for="video-picker">Pick a video file: </label>
+            <input type="file" id="video-picker" accept="video/mp4">
+        </span>
+        <span>
+            <label for="json-picker">Pick a config file: </label>
+            <input type="file" id="json-picker" accept="application/json">
+        </span>
+        <button id="playBtn" onclick="play();">Play</button>
+        </div>
+    </div>
+    <video id="player">
+    </video>
+
+    <script>
+        var player = document.getElementById("player");
+
+        // Same structure as the config file
+        var config = {};
+
+        // A list of all the relevant timestamps the cursor will snap to
+        // (i.e. all pauses + all loop starts + all keyframes).
+        var timestamps;
+
+        // Last timestamp the function onTimeUpdate ran on
+        var lastTimestamp = -1;
+
+        var isLooping = false;
+        var exitLoop = false;
+
+        /************************* Full screen stuff *************************/
+
+        function isFullScreen() {
+            return document.webkitIsFullScreen || document.mozFullScreen ||
+                false;
+        }
+
+        function enterFullScreen(event) {
+            if (isFullScreen()) return;
+
+            var el = document.body;
+            if (event instanceof HTMLElement) el = event;
+
+            el.requestFullScreen = el.requestFullScreen ||
+                el.webkitRequestFullScreen || el.mozRequestFullScreen
+                || (() => false);
+
+            el.requestFullScreen();
+        }
+
+        function exitFullScreen() {
+            if (!isFullScreen()) return;
+
+            document.cancelFullScreen = document.cancelFullScreen ||
+                document.webkitCancelFullScreen || document.mozCancelFullScreen
+                || (() => false);
+
+            document.cancelFullScreen();
+        }
+
+        /************************* Screen transitions *************************/
+
+        // Switch to video screen (not in fullscreen)
+        function switchToVideo() {
+            document.body.style.backgroundColor = "black";
+            player.style.display = "block";
+            document.getElementById("settings-container").style.display = "none";
+        }
+
+        // Switch to settings screen (i.e. file pickers)
+        function switchToSettings() {
+            player.style.display = "none";
+            document.getElementById("settings-container").style.display = "flex";
+            document.body.style.backgroundColor = "white";
+        }
+
+        /************************** Timeline jumping **************************/
+        
+        // Jump to previous timestamp
+        function jumpLeft() {
+            const currTime = Math.floor(player.currentTime);
+
+            if (timestamps.includes(currTime)) {
+                var newIdx = timestamps.indexOf(currTime) - 1;
+                player.currentTime = timestamps[newIdx] || 0;
+                return;
+            }
+            
+            for (var i = timestamps.length -1; i >= 0; i--) {
+                if (timestamps[i] < currTime) {
+                    player.currentTime = timestamps[i];
+                    return;
+                }
+            }
+        }
+
+        // Jump to next timestamp
+        function jumpRight() {
+            const currTime = Math.floor(player.currentTime);
+
+            if (timestamps.includes(currTime)) {
+                var newIdx = timestamps.indexOf(currTime) + 1;
+                player.currentTime = timestamps[newIdx] || player.duration;
+                return;
+            }
+            
+            for (var i = 0; i < timestamps.length; i++) {
+                if (timestamps[i] > currTime) {
+                    player.currentTime = timestamps[i];
+                    return;
+                }
+            }
+        }
+
+        /*************************** Event handlers ***************************/
+
+        function onKey(event) {
+            event.preventDefault();
+
+            switch (event.key) {
+                case config.play_key:
+                    if (player.paused) {
+                        player.play();
+                    }
+                    else {
+                        player.pause();
+                    }
+                    break;
+
+                case "Escape":
+                    if (isFullScreen()) {
+                        exitFullScreen();
+                        player.pause();
+                    }
+                    else {
+                        switchToSettings();
+                    }
+                    break;
+
+                case "ArrowLeft":
+                    jumpLeft();
+                    break;
+
+                case "ArrowRight":
+                    if (isLooping) {
+                        exitLoop = true;
+                        break;
+                    }
+                    jumpRight();
+                    break;
+                
+                case "ArrowUp":
+                case "ArrowDown":
+                    // Enable/disable the player's controls (i.e. timeline and
+                    // play button at the bottom)
+                    player.controls = !player.controls;
+                    break;
+
+                default: break;
+            }
+        }
+
+        // Runs continuously while the player is playing
+        function onTimeUpdate(event) {
+            var time = Math.floor(player.currentTime);
+
+            if (time == lastTimestamp) return;
+            lastTimestamp = time;
+
+            if (config.pause.includes(time)) {
+                player.pause();
+            }
+            for (var idx in config.loop) {
+                if (config.loop[idx][1] != time) continue;
+
+                if (isLooping && exitLoop) {
+                    isLooping = false;
+                    exitLoop = false;
+                    return;
+                }
+
+                player.currentTime = config.loop[idx][0];
+                isLooping = true;
+            }
+        }
+
+        /**********************************************************************/
+
+        function parseConfig(file) {
+            const reader = new FileReader();
+            reader.readAsText(file);
+
+            reader.onload = () => {
+                config = JSON.parse(reader.result);
+                config.pause.sort((a, b) => a - b);
+                config.loop.sort((a, b) => a[0] - b[0]);
+
+                timestamps = JSON.parse(JSON.stringify(config.pause));
+                for (var idx in config.loop) {
+                    timestamps.push(config.loop[idx][0]);
+                }
+                for (var idx in config.keyframes) {
+                    timestamps.push(config.keyframes[idx]);
+                }
+
+                // Also snap to first/last frame
+                timestamps.push(0);
+                timestamps.push(player.duration);
+
+                timestamps = [...new Set(timestamps)]; // remove duplicates
+                timestamps.sort((a, b) => a - b);
+            }
+        }
+
+        function play() {
+            const vidFile = document.getElementById("video-picker").files[0].name;
+            const cfgFile = document.getElementById("json-picker").files[0];
+            player.innerHTML = '<source src="' + vidFile + '", type="video/mp4">';
+
+            // parseConfig needs the video file metadata
+            player.onloadedmetadata = () => {parseConfig(cfgFile);}
+            
+            switchToVideo();
+            enterFullScreen();
+
+            player.addEventListener("timeupdate", onTimeUpdate);
+        }
+
+        document.addEventListener("keyup", onKey);
+    </script>
+
+    <style type="text/css">
+        :root {
+            --theme-color: #0e3c81;
+            --font-family: "Roboto", sans-serif;
+        }
+        * {
+            font-family: var(--font-family);
+            font-size: 16px;
+        }
+        button {
+            background-color: var(--theme-color);
+            color: white;
+            border: 0px solid white;
+            border-radius: 8px;
+            padding: 8px auto 8px auto;
+            font-size: 18px;
+        }
+        #settings-container {
+            display: flex;
+            justify-content: center;
+            flex-direction: column;
+            align-items: center;
+            height: 100vh;
+            width: 100vw;
+        }
+        #settings-inner {
+            width: 50%;
+            border: 1px solid black;
+            border-radius: 15px;
+            padding: 20px;
+            display: grid;
+        }
+        #settings-inner > span {
+            margin-bottom: 15px;
+        }
+        #player {
+            width: 100vw;
+            height: 100vh;
+            display: none;
+        }
+    </style>
+</body>
+</html>
